@@ -25,40 +25,21 @@ var httpTimeoutTime = flag.Int64("http-timeout-time", 5, "The timeout for the HT
 var httpStatusUrl = flag.String("http-status-url", "", "The url to check for HTTP status")
 var httpStatusCode = flag.Int("http-status-code", 200, "The status code for the HTTP status check")
 
-type QC chan bool
+type BC chan bool
+type ABC []BC
 
-func closeAll(chans []QC) {
-    for _, c := range(chans) {
+func (a ABC) closeAll() {
+    for _, c := range(a) {
         c <- true
         close(c)
     }
 }
 
-func check(interval int64, quit QC, f func()) {
-    for {
-        time.Sleep(interval * Seconds)
-        select {
-        case <- quit:
-            return
-        default:
-            f()
-        }
-    }
-}
-
-func getWithTimeout(url string, timeout int64) (ok bool) {
+func timeout(timeout int64, f func(chan int)) (ok bool) {
     ctr := make(chan int, 1)
     cto := make(chan int, 1)
 
-    go func() {
-       resp, _, err := http.Get(url)
-       if err == nil && resp.Body != nil {
-           reader := bufio.NewReader(resp.Body)
-           reader.ReadString('\r')
-           resp.Body.Close()
-           ctr <- 1
-       }
-    }()
+    go f(ctr)
 
     go func() {
         time.Sleep(timeout * Seconds)
@@ -76,10 +57,31 @@ func getWithTimeout(url string, timeout int64) (ok bool) {
 }
 
 
-func setupHttpTimeoutCheck(pid int) QC {
-    ch := make(QC)
+func check(interval int64, quit BC, f func()) {
+    for {
+        time.Sleep(interval * Seconds)
+        select {
+        case <- quit:
+            return
+        default:
+            f()
+        }
+    }
+}
+
+func setupHttpTimeoutCheck(pid int) BC {
+    ch := make(BC)
     go check(*extraInterval, ch, func() {
-        if !getWithTimeout(*httpTimeoutUrl, *httpTimeoutTime) {
+        failed := !timeout(*httpTimeoutTime, func(ctr chan int) {
+            resp, _, err := http.Get(*httpTimeoutUrl)
+            if err == nil && resp.Body != nil {
+                defer resp.Body.Close()
+                reader := bufio.NewReader(resp.Body)
+                reader.ReadString('\r')
+                ctr <- 1
+            }
+        })
+        if failed {
             println("HTTP timeout check failed after", *httpTimeoutTime, "seconds. Killing process", pid, "with signal", *killCode)
             syscall.Kill(pid, *killCode)
         }
@@ -87,8 +89,9 @@ func setupHttpTimeoutCheck(pid int) QC {
     return ch
 }
 
-func setupHttpStatusCheck(pid int) QC {
-    return make(QC)
+func setupHttpStatusCheck(pid int) BC {
+    ch := make(BC)
+    return ch
 }
 
 func main() {
@@ -98,7 +101,7 @@ func main() {
     for {
         cmd, _ := exec.Run(binary, flag.Args(), nil, cwd, exec.PassThrough, exec.PassThrough, exec.PassThrough)
         pid := cmd.Process.Pid
-        extras := make([]QC, 0)
+        extras := make(ABC, 0)
 
         if *httpTimeoutUrl != "" {
             extras = append(extras, setupHttpTimeoutCheck(pid))
@@ -110,6 +113,6 @@ func main() {
 
         cmd.Wait(os.WSTOPPED)
         println("Process died, restarting.")
-        closeAll(extras)
+        extras.closeAll()
     }
 }
