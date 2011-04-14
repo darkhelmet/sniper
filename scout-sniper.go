@@ -8,15 +8,17 @@ import (
     "os"
     "syscall"
     "time"
+    "strconv"
     // "runtime"
 )
 
 const Version = "0.1"
 const Seconds = 1e9
+const KiloBytes = 1024
+const Megabytes = KiloBytes * 1024
 // const UserAgent = "scout-sniper/" + Version + " golang/" + runtime.GOOS + "-" + runtime.GOARCH
 
 var extraInterval = flag.Int64("extra-interval", 30, "The time interval between extra checks")
-var killIfExtraCheckFail = flag.Bool("kill-if-extra-check-fails", true, "Kill the process if one of the extra checks fails?")
 var killCode = flag.Int("kill-signal", 9, "Kill signal to use when killing a process")
 
 var httpTimeoutUrl = flag.String("http-timeout-url", "", "The url to check for HTTP timeouts")
@@ -25,8 +27,17 @@ var httpTimeoutTime = flag.Int64("http-timeout-time", 5, "The timeout for the HT
 var httpStatusUrl = flag.String("http-status-url", "", "The url to check for HTTP status")
 var httpStatusCode = flag.Int("http-status-code", 200, "The status code for the HTTP status check")
 
+var maxMemory = flag.Float64("max-mem", 0, "The amount of memory in megabytes that the process is allowed")
+
 type BC chan bool
 type ABC []BC
+type ProcInfo map[string] string
+
+func getProcessInformation(pid int) ProcInfo {
+    return map[string] string {
+        "foo": "bar",
+    }
+}
 
 func (a ABC) closeAll() {
     for _, c := range(a) {
@@ -91,6 +102,37 @@ func setupHttpTimeoutCheck(pid int) BC {
 
 func setupHttpStatusCheck(pid int) BC {
     ch := make(BC)
+    go check(*extraInterval, ch, func() {
+        failed := !timeout(*httpTimeoutTime, func(ctr chan int) {
+            resp, _, err := http.Get(*httpStatusUrl)
+            if err == nil && *httpStatusCode == resp.StatusCode {
+                ctr <- 1
+            }
+        })
+        if failed {
+            println("HTTP status check failed after", *httpTimeoutTime, "seconds. Killing process", pid, "with signal", *killCode)
+            syscall.Kill(pid, *killCode)
+        }
+    })
+    return ch
+}
+
+func setupMaxMemoryCheck(pid int) BC {
+    ch := make(BC)
+    poller := GetPoller()
+    alreadyExceded := false
+    go check(*extraInterval, ch, func() {
+        kb := poller.GetMemory(pid)
+        if kb > *maxMemory {
+            if alreadyExceded {
+                println("Memory check failed for 2 intervals. Killing process", pid, "with signal", *killCode)
+                syscall.Kill(pid, *killCode)
+            }
+            alreadyExceded = true
+        } else {
+            alreadyExceded = false
+        }
+    })
     return ch
 }
 
@@ -109,6 +151,10 @@ func main() {
 
         if *httpStatusUrl != "" {
             extras = append(extras, setupHttpStatusCheck(pid))
+        }
+
+        if *maxMemory > 0 {
+            extras = append(extras, setupMaxMemoryCheck(pid))
         }
 
         cmd.Wait(os.WSTOPPED)
