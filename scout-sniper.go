@@ -80,7 +80,7 @@ func check(interval int64, quit BC, f func()) {
 }
 
 func setupHttpTimeoutCheck(pid int) BC {
-    ch := make(BC)
+    ch := make(BC, 1)
     go check(*extraInterval, ch, func() {
         failed := !timeout(*httpTimeoutTime, func(ctr chan int) {
             resp, _, err := http.Get(*httpTimeoutUrl)
@@ -100,7 +100,7 @@ func setupHttpTimeoutCheck(pid int) BC {
 }
 
 func setupHttpStatusCheck(pid int) BC {
-    ch := make(BC)
+    ch := make(BC, 1)
     go check(*extraInterval, ch, func() {
         failed := !timeout(*httpTimeoutTime, func(ctr chan int) {
             resp, _, err := http.Get(*httpStatusUrl)
@@ -117,7 +117,7 @@ func setupHttpStatusCheck(pid int) BC {
 }
 
 func setupMaxMemoryCheck(pid int) BC {
-    ch := make(BC)
+    ch := make(BC, 1)
     poller := GetPoller()
     alreadyExceded := false
     go check(*extraInterval, ch, func() {
